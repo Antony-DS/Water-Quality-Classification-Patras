@@ -1148,3 +1148,378 @@ def build_latest_sensor_statuses(
         .sort_values(sensor_id_col)
         .reset_index(drop=True)
     )
+
+
+def plot_monthly_water_quality(
+    df,
+    sensor_ids,
+    years,
+    date_col="date_insert",
+    sensor_col="sensor_id",
+    label_col="Water_Quality_Label",
+    location_col="location",
+    percentage=False
+):
+    """
+    Δημιουργεί grouped bar charts με τη μηνιαία κατανομή των
+    Water Quality labels (Ok, Medium, Danger).
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Το dataframe που περιέχει τις μετρήσεις και τα labels.
+
+    sensor_ids : int ή list
+        Ένας sensor_id ή λίστα από sensor_ids.
+
+    years : int ή list
+        Ένα έτος ή λίστα από έτη.
+
+    date_col : str
+        Η στήλη ημερομηνίας/ώρας.
+
+    sensor_col : str
+        Η στήλη που περιέχει το sensor ID.
+
+    label_col : str
+        Η στήλη με τα labels Ok / Medium / Danger.
+
+    location_col : str
+        Η στήλη με την τοποθεσία του αισθητήρα.
+
+    percentage : bool
+        False -> εμφανίζει αριθμό μετρήσεων.
+        True  -> εμφανίζει ποσοστό ανά μήνα.
+    """
+
+    # --------------------------------------------------------
+    # Επιτρέπουμε να δοθεί ένας sensor αντί για λίστα
+    # --------------------------------------------------------
+
+    if not isinstance(sensor_ids, (list, tuple, set)):
+        sensor_ids = [sensor_ids]
+
+    # Επιτρέπουμε να δοθεί ένα έτος αντί για λίστα
+    if not isinstance(years, (list, tuple, set)):
+        years = [years]
+
+    # --------------------------------------------------------
+    # Αντίγραφο για να μην αλλάζουμε το αρχικό dataframe
+    # --------------------------------------------------------
+
+    plot_df = df.copy()
+
+    # Μετατροπή της ημερομηνίας σε datetime
+    plot_df[date_col] = pd.to_datetime(
+        plot_df[date_col],
+        errors="coerce"
+    )
+
+    # --------------------------------------------------------
+    # Φιλτράρισμα αισθητήρων και ετών
+    # --------------------------------------------------------
+
+    plot_df = plot_df[
+        plot_df[sensor_col].isin(sensor_ids)
+        &
+        plot_df[date_col].dt.year.isin(years)
+    ].copy()
+
+    if plot_df.empty:
+        print(
+            "Δεν βρέθηκαν δεδομένα για τους "
+            "συγκεκριμένους αισθητήρες/έτη."
+        )
+        return
+
+    # --------------------------------------------------------
+    # Δημιουργία year και month
+    # --------------------------------------------------------
+
+    plot_df["plot_year"] = plot_df[date_col].dt.year
+    plot_df["plot_month"] = plot_df[date_col].dt.month
+
+    month_names = {
+        1: "Jan",
+        2: "Feb",
+        3: "Mar",
+        4: "Apr",
+        5: "May",
+        6: "Jun",
+        7: "Jul",
+        8: "Aug",
+        9: "Sep",
+        10: "Oct",
+        11: "Nov",
+        12: "Dec"
+    }
+
+    label_order = [
+        "Ok",
+        "Medium",
+        "Danger"
+    ]
+
+    # --------------------------------------------------------
+    # Ξεχωριστό plot για κάθε sensor
+    # --------------------------------------------------------
+
+    for sensor_id in sensor_ids:
+
+        sensor_df = plot_df[
+            plot_df[sensor_col] == sensor_id
+        ].copy()
+
+        if sensor_df.empty:
+            print(
+                f"Δεν βρέθηκαν δεδομένα για sensor {sensor_id} "
+                f"στα έτη {years}."
+            )
+            continue
+
+        # ----------------------------------------------------
+        # Location για τον τίτλο
+        # ----------------------------------------------------
+
+        location = ""
+
+        if (
+            location_col in sensor_df.columns
+            and sensor_df[location_col].notna().any()
+        ):
+            location = (
+                sensor_df[location_col]
+                .dropna()
+                .iloc[0]
+            )
+
+        # ----------------------------------------------------
+        # Counts ανά έτος / μήνα / label
+        # ----------------------------------------------------
+
+        monthly = (
+            sensor_df
+            .groupby(
+                [
+                    "plot_year",
+                    "plot_month",
+                    label_col
+                ]
+            )
+            .size()
+            .unstack(fill_value=0)
+        )
+
+        # Βεβαιωνόμαστε ότι υπάρχουν πάντα
+        # και οι 3 στήλες
+        monthly = monthly.reindex(
+            columns=label_order,
+            fill_value=0
+        )
+
+        # ----------------------------------------------------
+        # Βάζουμε και μήνες στους οποίους μπορεί να μην
+        # υπήρξε κάποιο συγκεκριμένο label
+        # ----------------------------------------------------
+
+        complete_index = pd.MultiIndex.from_product(
+            [
+                sorted(years),
+                range(1, 13)
+            ],
+            names=[
+                "plot_year",
+                "plot_month"
+            ]
+        )
+
+        monthly = monthly.reindex(
+            complete_index,
+            fill_value=0
+        )
+
+        # ----------------------------------------------------
+        # Δεν εμφανίζουμε μήνες πριν την πρώτη ή μετά
+        # την τελευταία διαθέσιμη μέτρηση του sensor
+        # ----------------------------------------------------
+
+        sensor_start = (
+            sensor_df[date_col]
+            .min()
+            .to_period("M")
+        )
+
+        sensor_end = (
+            sensor_df[date_col]
+            .max()
+            .to_period("M")
+        )
+
+        valid_months = []
+
+        for year, month in monthly.index:
+
+            current_period = pd.Period(
+                year=year,
+                month=month,
+                freq="M"
+            )
+
+            valid_months.append(
+                sensor_start
+                <= current_period
+                <= sensor_end
+            )
+
+        monthly = monthly.loc[valid_months]
+
+        # ----------------------------------------------------
+        # Μετατροπή σε percentages, αν ζητηθεί
+        # ----------------------------------------------------
+
+        if percentage:
+
+            totals = monthly.sum(axis=1)
+
+            monthly = (
+                monthly
+                .div(
+                    totals.replace(0, np.nan),
+                    axis=0
+                )
+                * 100
+            )
+
+            monthly = monthly.fillna(0)
+
+        # ----------------------------------------------------
+        # Labels για τον x-axis
+        # ----------------------------------------------------
+
+        if len(years) == 1:
+
+            x_labels = [
+                month_names[month]
+                for year, month in monthly.index
+            ]
+
+        else:
+
+            x_labels = [
+                f"{month_names[month]} {year}"
+                for year, month in monthly.index
+            ]
+
+        # ----------------------------------------------------
+        # GROUPED BAR CHART
+        # ----------------------------------------------------
+
+        # 1.3 ώστε να υπάρχει λίγο κενό ανάμεσα
+        # στις ομάδες των μηνών
+        x = np.arange(
+            len(monthly)
+        ) * 1.3
+
+        bar_width = 0.25
+
+        fig, ax = plt.subplots(
+            figsize=(14, 6)
+        )
+
+        # Ok
+        ax.bar(
+            x - bar_width,
+            monthly["Ok"].values,
+            width=bar_width,
+            label="Ok"
+        )
+
+        # Medium
+        ax.bar(
+            x,
+            monthly["Medium"].values,
+            width=bar_width,
+            label="Medium"
+        )
+
+        # Danger
+        ax.bar(
+            x + bar_width,
+            monthly["Danger"].values,
+            width=bar_width,
+            label="Danger"
+        )
+
+        # ----------------------------------------------------
+        # Τίτλος
+        # ----------------------------------------------------
+
+        title = (
+            f"Monthly Water Quality — "
+            f"Sensor {sensor_id}"
+        )
+
+        if location:
+            title += f" — {location}"
+
+        ax.set_title(title)
+
+        # ----------------------------------------------------
+        # Axes
+        # ----------------------------------------------------
+
+        ax.set_xlabel("Month")
+
+        if percentage:
+
+            ax.set_ylabel(
+                "Percentage of measurements (%)"
+            )
+
+            ax.set_ylim(
+                0,
+                100
+            )
+
+        else:
+
+            ax.set_ylabel(
+                "Number of measurements"
+            )
+
+        # Οι μήνες μπαίνουν στο κέντρο
+        # των τριών bars
+        ax.set_xticks(x)
+
+        ax.set_xticklabels(
+            x_labels,
+            rotation=45,
+            ha="right"
+        )
+
+        # ----------------------------------------------------
+        # Legend
+        # ----------------------------------------------------
+
+        ax.legend(
+            title="Water Quality"
+        )
+
+        # ----------------------------------------------------
+        # Grid μόνο στον y-axis για readability
+        # ----------------------------------------------------
+
+        ax.grid(
+            axis="y",
+            alpha=0.25
+        )
+
+        ax.set_axisbelow(True)
+
+        # ----------------------------------------------------
+        # Layout
+        # ----------------------------------------------------
+
+        plt.tight_layout()
+
+        plt.show()
